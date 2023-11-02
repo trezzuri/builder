@@ -1,0 +1,4 @@
+[submodule "frappe_docker"]
+	path = frappe_docker
+	url = https://github.com/trezzuri/frappe_docker
+	branch = trezzuri

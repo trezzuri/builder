@@ -1,0 +1,131 @@
+#!/bin/bash
+# Script para instalar / atualizar o app e para criar novo site
+set +e
+
+if [ "$EUID" -ne 0 ];
+  then echo "Necessário executar como root ou com sudo"
+  exit 1
+fi
+
+# verifica se os arquivos .env existe
+if [ ! -f .env ]; then
+  echo "Arquivo .env inexistente"
+  exit 1
+fi
+
+# exporta variáveis do .env
+export $(grep -v '^#' .env | xargs -d '\n')
+
+if [[ "$DOCKER_USER" == "" ]]; then
+  echo "DOCKER_USER não encontrado no .env"
+  exit 1
+fi
+
+if [[ "$DB_PASSWORD" == "" ]]; then
+  echo "DB_PASSWORD não encontrado no .env"
+  exit 1
+fi
+
+if [[ "$APP_NAME" == "" ]]; then
+  echo "APP_NAME não encontrado no .env"
+  exit 1
+fi
+
+# cria o diretório temp
+rm -rf temp
+mkdir  temp
+
+# função para auto-update do script
+function autoupdate() {
+  echo "Realizando auto-update do script..."
+  chmod +x temp/install
+  if [ $? -ne 0 ]; then
+      echo "ERRO: Falha no auto-update"
+      exit 1
+  fi
+
+  cp -f temp/install install
+  if [ $? -ne 0 ]; then
+      echo "ERRO: Falha no auto-update"
+      exit 1
+  fi
+
+  # executa de novo o script
+  exec ./install "$@" ; exit
+}
+
+# obtém o script install mais atualizado
+sudo wget --no-cache -q -O temp/install https://raw.githubusercontent.com/trezzuri/builder/master/install 
+if [ $? -ne 0 ]; then
+    echo "AVISO: Falha no download do script mais recente, pulando auto-update..."
+else
+    if ! cmp -s install temp/install ; then
+      param=("$@")
+      autoupdate "${param[@]}" ; exit
+    fi
+fi
+
+# obtem o docker-compose.yaml atualizado
+sudo wget --no-cache -q -O temp/docker-compose.yaml https://raw.githubusercontent.com/trezzuri/builder/master/compose/$APP_NAME/docker-compose.yaml
+if [ $? -ne 0 ]; then
+    sudo docker logout
+    echo "Falha no download do docker-compose.yaml"
+    exit 1
+fi
+
+# obtém a senha do docker hub
+if [[ "$DOCKER_PASSWORD" == "" ]]; then
+  read -p "Docker Hub: usuário $DOCKER_USER, senha? " DOCKER_PASSWORD
+  if [[ "$DOCKER_PASSWORD" == "" ]]; then
+    exit
+  fi
+fi
+
+# faz o login no hub
+echo "$DOCKER_PASSWORD" | sudo docker login --username $DOCKER_USER --password-stdin > /dev/null 2>&1
+if [ $? -ne 0 ]; then
+    echo "Falha no login do docker"
+    exit 1
+fi
+
+# baixa as imagens atualizadas
+cd temp
+sudo docker compose pull
+cd ..
+
+# para os containers
+if [ -f docker-compose.yaml ]; then
+  IS_RUNNING=`sudo docker compose ps --services --filter "status=running"`
+  if [[ "$IS_RUNNING" != "" ]]; then
+    sudo docker compose down
+  fi
+fi
+
+# atualiza o docker-compose.yaml
+cp temp/docker-compose.yaml .
+
+# sobe o serviço
+sudo docker compose up -d 
+if [ $? -ne 0 ]; then
+    echo "Falha no docker compose up"
+    exit 1
+fi
+
+# republica os assets para o frappe
+sudo docker compose exec frontend bench --site all build
+
+# executa as migrations de banco de dados
+sudo docker compose exec backend bench --site all migrate
+
+# verifica se informou um site para ser criado 
+if [ $1 ]; then
+  sudo docker compose exec backend bench new-site $1 --mariadb-root-password $DB_PASSWORD --no-mariadb-socket
+  sudo docker compose exec backend bench --site $1 install-app $APP_NAME
+  sudo docker compose exec backend bench --site $1 enable-scheduler
+  sudo docker compose exec backend bench --site $1 set-config host_name "http://$1"
+  sudo docker compose exec backend bench --site $1 migrate
+fi
+
+# apaga as imagens não utilizadas e baixa imagens atualizadas para limpar espaço
+sudo docker image prune -f
+rm -rf temp

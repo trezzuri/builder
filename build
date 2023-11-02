@@ -1,0 +1,295 @@
+#!/bin/bash
+set +e
+
+# ##############
+# prepara o build de uma nova versão do app
+#
+main () {
+
+    rm -Rf temp
+    mkdir temp
+
+    # obtem variáveis do .env
+    le_env "$@"
+
+    # atualiza o docker-compose.yaml
+    docker_compose "$@"
+    
+    # clona app para criar tag de versão
+    versao_app "$@"
+    
+    # faz o build 
+    docker_build "$@"
+    
+    # atualiza o arquivo de próxima versão
+    atualiza_builder "$@"
+
+    rm -Rf temp
+    printf "\n*** Build OK\n"
+
+}
+
+
+# #################
+# carrega o arquivo .env em variaveis
+#
+le_env () {
+
+    # verifica se o arquivo .env existe
+    if [ ! -f "$1" ]; then
+        echo "Arquivo $1 inexistente"
+        exit 1
+    fi
+
+    export $(grep -v '^#' $1 | xargs -d '\n')
+
+    # adiciona o app em BACKUP_SERVER_PATH
+    BACKUP_SERVER_PATH+="/$APP_NAME"
+
+    # define a url base do github
+    GIT_URL="https://$GITHUB_USER:$GITHUB_TOKEN@github.com/trezzuri"
+
+    # define a url do bench
+    BENCH_REPO="$GIT_URL/bench"
+
+    # prepara a variável de apps a incluir no build
+    APPS_JSON="["
+
+    # lê as variáveis APP_REQUIRED
+    for i in {1..7}; do
+
+        # obtém os apps e branchs do .env
+        TEMP="APP_REQUIRED_$i"
+        L_APP="${!TEMP}"
+        TEMP="APP_BRANCH_$i"
+        L_BRANCH="${!TEMP}"
+
+        # verifica se está preenchida
+        if [ -z "$L_APP" ]; then
+            continue
+        fi
+
+        # o primeiro app deve ser sempre o frappe
+        if [ $i -eq 1 ]; then
+            FRAPPE_VERSION="$L_BRANCH"
+            FRAPPE_REPO="$GIT_URL/$L_APP"
+        else
+
+            # verifica se o erpnext é requerido e alimenta variáveis
+            if [ "erpnext" == "$L_APP" ]; then
+                ERPNEXT_VERSION="$L_BRANCH"
+                ERPNEXT_REPO="$GIT_URL/$L_APP"
+            fi
+
+            # concatena a vírgula para o segundo app em diante
+            if [ $i -gt 2 ]; then
+                APPS_JSON+=","
+            fi
+
+            # concatena o app na variavel
+            APPS_JSON+="{
+                \"url\": \"$GIT_URL/$L_APP\",
+                \"branch\": \"$L_BRANCH\"
+            }" 
+
+        fi
+        
+    done
+
+    APPS_JSON+="]"
+
+    APPS_JSON_BASE64=$(echo ${APPS_JSON} | base64 -w 0)
+
+}
+
+
+
+# #################
+# atualiza o docker-compose.yaml para o app
+#
+docker_compose () {
+
+    # cria a pasta para o app
+    if [ ! -d "compose/$APP_NAME" ]; then
+        mkdir "compose/$APP_NAME"
+    fi
+
+    cd frappe_docker
+
+    # altera o timeout do gunicorn para 300s
+    sed -i -E "s/--timeout=120/--timeout=300/" images/custom/Containerfile
+
+    # atualiza o docker-compose.yaml para o app
+    docker compose --env-file ../$1 \
+        -f ../compose/base.yaml \
+        -f overrides/compose.mariadb.yaml \
+        -f overrides/compose.redis.yaml \
+        -f overrides/compose.noproxy.yaml \
+        config > ../compose/$APP_NAME/docker-compose.yaml
+    if [ $? -ne 0 ]; then
+        echo "Falha ao atualizar o docker-compose.yaml para $APP_NAME"
+        exit 1
+    fi
+
+    cd .. 
+
+    # substitui o $$DB_PASSWORD por $DB_PASSWORD (bug do docker compose)
+    sed -i -E 's/(\$\$DB_PASSWORD)/$DB_PASSWORD/' compose/$APP_NAME/docker-compose.yaml
+
+    # substitui a porta publicada 
+    sed -i -E "s/published: \"8080\"/published: \"$FRAPPE_PORT\"/" compose/$APP_NAME/docker-compose.yaml
+
+}
+
+
+# #################
+# clona o app e atualiza a tag de versão
+#
+versao_app () {
+
+    git clone $GIT_URL/$APP_NAME temp/$APP_NAME
+    if [ $? -ne 0 ]; then
+        echo "Falha ao clonar o app $APP_NAME"
+        exit 1
+    fi
+
+    cd temp/$APP_NAME
+
+    # lê o arquivo de versão do app
+    git checkout master
+    if [ -f next.version ]; then
+        VERSION="$(cat next.version)"
+        if [ $? -ne 0 ]; then
+            echo "Falha ao ler o arquivo next.version do app $APP_NAME"
+            exit 1
+        fi
+    else
+        VERSION="1.2.0"
+        echo $VERSION > next.version
+        git add next.version
+    fi    
+
+    # verifica se a versão já tem tag
+    if [ $(git tag -l "v$VERSION") ]; then
+        echo "****"
+        echo "**** Versão $VERSION já existe no app $APP_NAME, prosseguindo..."
+        echo "****"
+    else
+
+        # altera a versão do app e realiza o commit
+        echo __version__ = \"$VERSION\" > $APP_NAME/__init__.py &&
+        git add $APP_NAME/__init__.py && 
+        git commit -m "v$VERSION" && 
+        git push origin master
+        if [ $? -ne 0 ]; then
+            echo "Falha ao realizar o commit da versão no app $APP_NAME"
+            exit 1
+        fi
+
+        # cria a tag de versão
+        git push origin HEAD:refs/tags/v$VERSION
+        if [ $? -ne 0 ]; then
+            echo "Falha ao realizar o push da versão no app $APP_NAME"
+            exit 1
+        fi
+
+    fi
+
+    # volta ao diretorio raiz
+    cd .. && cd ..        
+}
+
+
+# #################
+# realiza o build da versão
+#
+docker_build() {
+
+    cd frappe_docker
+
+    # faz o build 
+    sudo docker build \
+        --build-arg=FRAPPE_BRANCH=$FRAPPE_VERSION \
+        --build-arg=APPS_JSON_BASE64=$APPS_JSON_BASE64 \
+        --tag=$DOCKER_USER/$APP_NAME:v$VERSION \
+        --tag=$DOCKER_USER/$APP_NAME:latest \
+        --file=images/custom/Containerfile .
+    
+    if [ $? -ne 0 ]; then
+        echo "Falha no docker build"
+        exit 1
+    fi
+    
+    # login no docker hub
+    echo $DOCKER_PASSWORD | sudo docker login --username $DOCKER_USER --password-stdin
+    if [ $? -ne 0 ]; then
+        echo "Falha no docker login"
+        exit 1
+    fi
+
+    # envia a imagem para o docker hub
+    sudo docker push --all-tags $DOCKER_USER/$APP_NAME
+    if [ $? -ne 0 ]; then
+        sudo docker logout
+        echo "Falha no docker push"
+        exit 1
+    fi
+
+    # faz logout
+    sudo docker logout
+
+    # limpa o cache e imagens
+    sudo docker builder prune -f --all
+    sudo docker image prune -f --all
+
+    # volta ao diretorio raiz
+    cd .. 
+
+}
+
+
+# #################
+# atualiza o builder 
+#
+atualiza_builder () {
+
+    cd temp/$APP_NAME
+
+    # incrementa a versão em +1, para o próximo build
+    NEXT_VERSION="$(awk -F. '$3=$3+1' OFS=. next.version)"
+    if [ $? -ne 0 ]; then
+        echo "Falha ao incrementar a next.version do app $APP_NAME"
+        exit 1
+    fi
+
+    # atualiza o arquivo
+    echo $NEXT_VERSION > next.version &&
+    git add next.version && 
+    git commit -m "v$VERSION" && 
+    git push origin master
+    if [ $? -ne 0 ]; then
+        echo "Falha ao realizar o commit da próxima versão no app $APP_NAME"
+        exit 1
+    fi
+
+    # volta ao diretorio raiz
+    cd .. && cd ..        
+
+    # faz o commit do arquivo docker-compose.yaml
+    git add compose/$APP_NAME/docker-compose.yaml && 
+    git commit -m "v$VERSION" && 
+    git push origin master
+    if [ $? -ne 0 ]; then
+        echo "Falha no commit do docker-compose.yaml deste repo"
+        exit 1
+    fi
+
+}
+
+
+# executa a rotina main
+if [ $# -eq 0 ]; then
+    echo "Uso: build <.produto.env>"
+    exit 1
+fi   
+main "$@"; exit
