@@ -1,4 +1,4 @@
-name: xact2
+name: docker-xact2
 services:
   backend:
     depends_on:
@@ -306,22 +306,22 @@ services:
       volume: {}
 networks:
   default:
-    name: xact2_default
+    name: docker-xact2_default
 volumes:
   assets:
-    name: xact2_assets
+    name: docker-xact2_assets
   db-data:
-    name: xact2_db-data
+    name: docker-xact2_db-data
   frappe-logs:
-    name: xact2_frappe-logs
+    name: docker-xact2_frappe-logs
   redis-cache-data:
-    name: xact2_redis-cache-data
+    name: docker-xact2_redis-cache-data
   redis-queue-data:
-    name: xact2_redis-queue-data
+    name: docker-xact2_redis-queue-data
   redis-socketio-data:
-    name: xact2_redis-socketio-data
+    name: docker-xact2_redis-socketio-data
   sites:
-    name: xact2_sites
+    name: docker-xact2_sites
 x-backend-defaults:
   depends_on:
     configurator:
