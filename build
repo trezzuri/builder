@@ -164,7 +164,7 @@ versao_app () {
             exit 1
         fi
     else
-        VERSION="1.2.0"
+        VERSION="1.0.0"
         echo $VERSION > next.version
         git add next.version
     fi    
