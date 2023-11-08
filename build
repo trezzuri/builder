@@ -276,14 +276,16 @@ atualiza_builder () {
     cd .. && cd ..        
 
     # faz o commit do arquivo docker-compose.yaml
-    git add compose/$APP_NAME/docker-compose.yaml && 
-    git commit -m "v$VERSION" && 
-    git push origin master
-    if [ $? -ne 0 ]; then
-        echo "Falha no commit do docker-compose.yaml deste repo"
-        exit 1
+    if [ ! -z "$(git diff compose/$APP_NAME/docker-compose.yaml)" ]; then
+        git add compose/$APP_NAME/docker-compose.yaml && 
+        git commit -m "v$VERSION" && 
+        git push origin master
+        if [ $? -ne 0 ]; then
+            echo "Falha no commit do docker-compose.yaml deste repo"
+            exit 1
+        fi
     fi
-
+    
 }
 
 
