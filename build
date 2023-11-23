@@ -272,6 +272,12 @@ atualiza_builder () {
         exit 1
     fi
 
+    # sincroniza a branch develop
+    git checkout develop &&
+    git pull &&
+    git merge master &&
+    git push
+
     # volta ao diretorio raiz
     cd .. && cd ..        
 
