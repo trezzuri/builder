@@ -275,7 +275,7 @@ atualiza_builder () {
     # sincroniza a branch develop
     git checkout develop &&
     git pull &&
-    git merge master &&
+    git merge -m "v$VERSION: merge master into develop" master &&
     git push
 
     # volta ao diretorio raiz
