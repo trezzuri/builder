@@ -1,0 +1,125 @@
+#!/bin/bash
+set +e
+
+# ##############
+# prepara o build de uma nova versão do app
+#
+main () {
+
+    # obtem variáveis do .env
+    le_env "$@"
+
+    # faz o build 
+    docker_build "$@"
+    
+    printf "\n*** Build OK\n"
+
+}
+
+
+# #################
+# carrega o arquivo .env em variaveis
+#
+le_env () {
+
+    # verifica se o arquivo .env existe
+    if [ ! -f "$1" ]; then
+        echo "Arquivo $1 inexistente"
+        exit 1
+    fi
+
+    export $(grep -v '^#' $1 | xargs -d '\n')
+
+    # adiciona o app em BACKUP_SERVER_PATH
+    BACKUP_SERVER_PATH+="/$APP_NAME"
+
+    # define a url base do github
+    GIT_URL="https://$GITHUB_USER:$GITHUB_TOKEN@github.com/trezzuri"
+
+    # define a url do bench
+    BENCH_REPO="$GIT_URL/bench"
+
+    # prepara a variável de apps a incluir no build
+    APPS_JSON="["
+
+    # lê as variáveis APP_REQUIRED
+    for i in {1..7}; do
+
+        # obtém os apps e branchs do .env
+        TEMP="APP_REQUIRED_$i"
+        L_APP="${!TEMP}"
+        TEMP="APP_BRANCH_$i"
+        L_BRANCH="${!TEMP}"
+
+        # verifica se está preenchida
+        if [ -z "$L_APP" ]; then
+            continue
+        fi
+
+        # o primeiro app deve ser sempre o frappe
+        if [ $i -eq 1 ]; then
+            FRAPPE_VERSION="$L_BRANCH"
+            FRAPPE_REPO="$GIT_URL/$L_APP"
+        else
+
+            # verifica se o erpnext é requerido e alimenta variáveis
+            if [ "erpnext" == "$L_APP" ]; then
+                ERPNEXT_VERSION="$L_BRANCH"
+                ERPNEXT_REPO="$GIT_URL/$L_APP"
+            fi
+
+            # concatena a vírgula para o segundo app em diante
+            if [ $i -gt 2 ]; then
+                APPS_JSON+=","
+            fi
+
+            # concatena o app na variavel
+            APPS_JSON+="{
+                \"url\": \"$GIT_URL/$L_APP\",
+                \"branch\": \"$L_BRANCH\"
+            }" 
+
+        fi
+        
+    done
+
+    APPS_JSON+="]"
+
+    APPS_JSON_BASE64=$(echo ${APPS_JSON} | base64 -w 0)
+
+}
+
+
+
+# #################
+# realiza o build da versão
+#
+docker_build() {
+
+    cd frappe_docker
+
+    # faz o build 
+    sudo docker build \
+        --build-arg=FRAPPE_BRANCH=$FRAPPE_VERSION \
+        --build-arg=APPS_JSON_BASE64=$APPS_JSON_BASE64 \
+        --tag=$DOCKER_USER/$APP_NAME:dev \
+        --file=images/custom/Containerfile .
+    
+    if [ $? -ne 0 ]; then
+        echo "Falha no docker build"
+        exit 1
+    fi
+    
+    # volta ao diretorio raiz
+    cd .. 
+
+}
+
+
+
+# executa a rotina main
+if [ $# -eq 0 ]; then
+    echo "Uso: build <.produto.env>"
+    exit 1
+fi   
+main "$@"; exit
