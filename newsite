@@ -1,0 +1,38 @@
+#!/bin/bash
+# Script para instalar / atualizar o app e para criar novo site
+set +e
+
+if [ "$EUID" -ne 0 ];
+  then echo "Necessário executar como root ou com sudo"
+  exit 1
+fi
+
+# verifica se os arquivos .env existe
+if [ ! -f .env ]; then
+  echo "Arquivo .env inexistente"
+  exit 1
+fi
+
+# exporta variáveis do .env
+export $(grep -v '^#' .env | xargs -d '\n')
+
+if [[ "$DOCKER_USER" == "" ]]; then
+  echo "DOCKER_USER não encontrado no .env"
+  exit 1
+fi
+
+if [[ "$DB_PASSWORD" == "" ]]; then
+  echo "DB_PASSWORD não encontrado no .env"
+  exit 1
+fi
+
+if [[ "$APP_NAME" == "" ]]; then
+  echo "APP_NAME não encontrado no .env"
+  exit 1
+fi
+
+sudo docker compose exec backend bench new-site $1 --mariadb-root-password $DB_PASSWORD --no-mariadb-socket
+sudo docker compose exec backend bench --site $1 install-app $APP_NAME
+sudo docker compose exec backend bench --site $1 enable-scheduler
+sudo docker compose exec backend bench --site $1 set-config host_name "http://$1"
+sudo docker compose exec backend bench --site $1 migrate
